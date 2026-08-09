@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<h2>提交成绩</h2>
+
+名字：
+<input id="name" value="毛毛">
+
+<br>
+
+分数：
+<input id="score" value="100">
+
+<br><br>
+
+<button onclick="sendScore()">提交</button>
+
+
+<script>
+
+function sendScore(){
+
+fetch("http://localhost:3000/score",{
+
+method:"POST",
+
+headers:{
+"Content-Type":"application/json"
+},
+
+body:JSON.stringify({
+
+name:document.getElementById("name").value,
+
+game:"五子棋",
+
+score:Number(document.getElementById("score").value)
+
+})
+
+})
+
+.then(res=>res.json())
+
+.then(data=>{
+
+alert("提交成功");
+
+});
+
+}
+
+</script>
+
+</body>
+</html>
