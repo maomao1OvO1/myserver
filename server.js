@@ -74,6 +74,24 @@ app.get("/ranking",(req,res)=>{
 
 });
 
+
+// 临时清空排行榜
+app.post("/reset",(req,res)=>{
+
+    scores = [];
+
+    fs.writeFileSync(
+        "scores.json",
+        JSON.stringify(scores,null,2)
+    );
+
+    res.json({
+        success:true
+    });
+
+});
+
+
 // 玩家胜利加分接口
 // 游戏结束时调用
 // 例如：
