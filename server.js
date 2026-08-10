@@ -163,7 +163,7 @@ console.log(data.name,
 
 // 启动服务器
 // 端口：3000
-app.listen(3000,()=>{
+app.listen(process.env.PORT || 3000,()=>{
 
     console.log("服务器启动成功");
 
