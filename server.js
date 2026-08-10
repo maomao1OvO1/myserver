@@ -74,6 +74,24 @@ app.get("/ranking",(req,res)=>{
 
 });
 
+// 清空排行榜接口
+// 用于测试时重置所有玩家分数
+// 访问 POST /reset 会删除所有排行榜数据
+app.post("/reset",(req,res)=>{
+
+    scores = [];
+
+    fs.writeFileSync(
+        "scores.json",
+        JSON.stringify(scores,null,2)
+    );
+
+    res.json({
+        success:true,
+        message:"排行榜已清空"
+    });
+
+});
 
 // 玩家胜利加分接口
 // 游戏结束时调用
