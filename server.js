@@ -121,9 +121,25 @@ console.log(data.name,
     // 如果玩家存在，积分 +1
     if(player){
 
+    if(data.game === "猜数字"){
+
+        // 猜数字：次数越少越好
+
+        if(data.score < player.score){
+
+            player.score = data.score;
+
+        }
+
+    }else{
+
+        // 其他游戏：胜利次数+1
+
         player.score++;
 
     }
+
+}
 
     // 如果玩家不存在，创建新玩家
     else{
@@ -134,7 +150,7 @@ console.log(data.name,
 
             game:data.game,
 
-            score:1
+            score:data.game === "猜数字" ? data.score : 1
 
         });
 
