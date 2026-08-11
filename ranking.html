@@ -81,7 +81,7 @@ body{
 
 <body>
 
-<h1>🏆 五子棋排行榜</h1>
+<h1>🏆 毛毛游戏平台排行榜</h1>
 
 <p>实时战绩</p>
 
@@ -99,7 +99,27 @@ fetch("https://maomao-server.onrender.com/ranking")
 
     let html="";
 
-    data.forEach((p,i)=>{
+    let games={};
+
+
+    data.forEach(p=>{
+
+        if(!games[p.game]){
+
+            games[p.game]=[];
+
+        }
+
+        games[p.game].push(p);
+
+    });
+
+
+    for(let game in games){
+
+        html += `<h2>🎮 ${game}</h2>`;
+
+        games[game].forEach((p,i)=>{
 
         let medal = ["🥇","🥈","🥉"][i] || "🏅";
 
@@ -122,6 +142,9 @@ ${p.score} 分
 
     });
 
+
+    }
+     
 
     document.getElementById("list").innerHTML=html;
 
