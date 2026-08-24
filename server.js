@@ -22,7 +22,7 @@ const GAMES = {
   "gomoku":  { label: "五子棋",  best: "max", cap: 100000,   unit: "连胜" },
   "chess":   { label: "象棋",    best: "max", cap: 100000,   unit: "连胜" },
   "fish":    { label: "捕鱼",    best: "max", cap: 10000000, unit: "分" },
-  "go":      { label: "围棋",    best: "max", cap: 1000000,  unit: "胜" }
+  "go":      { label: "围棋",    best: "max", cap: 1000000,  unit: "目" }
 };
 
 // 数据：{ "游戏": { "玩家": { score: 最佳分, ts: 时间戳 } } }
