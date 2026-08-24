@@ -197,6 +197,30 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // 删除某玩家某游戏的成绩：POST /score/delete  { name, game }
+  if (pathname === "/score/delete" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch (e) {
+        return sendJSON(res, 400, { ok: false, message: "格式错误" });
+      }
+      const name = sanitizeName(data.name);
+      const game = String(data.game || "").trim();
+      if (!name || !GAMES[game]) return sendJSON(res, 400, { ok: false, message: "参数无效" });
+      if (scores[game] && scores[game][name]) {
+        delete scores[game][name];
+        saveScores();
+        return sendJSON(res, 200, { ok: true, message: "已删除：" + name + "（" + game + "）" });
+      }
+      return sendJSON(res, 200, { ok: false, message: "未找到该成绩" });
+    });
+    return;
+  }
+
   // 静态文件（ranking.html、test.html 等）
   serveStatic(res, pathname);
 });
