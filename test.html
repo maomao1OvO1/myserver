@@ -1,56 +1,64 @@
 <!DOCTYPE html>
 <html>
+<head>
+<meta charset="UTF-8">
+<title>提交成绩测试</title>
+<style>
+body { text-align:center; font-family:Arial; padding:20px; }
+.box { display:inline-block; background:#fff; padding:20px 30px; border-radius:12px; box-shadow:0 3px 10px rgba(0,0,0,0.15); }
+input, select { padding:8px; margin:5px; border-radius:8px; border:1px solid #ccc; }
+button { padding:9px 18px; border:none; border-radius:8px; background:#7C5CBF; color:#fff; cursor:pointer; }
+</style>
+</head>
 <body>
 
-<h2>提交成绩</h2>
+<div class="box">
+<h2>提交成绩测试</h2>
+
+游戏：
+<select id="gameSel">
+    <option value="2048">2048</option>
+    <option value="snake">贪吃蛇</option>
+    <option value="typing">打字</option>
+    <option value="guess">猜数字</option>
+    <option value="gomoku">五子棋</option>
+    <option value="chess">象棋</option>
+    <option value="fish">捕鱼</option>
+</select>
+<br>
 
 名字：
 <input id="name" value="毛毛">
-
 <br>
 
 分数：
 <input id="score" value="100">
-
 <br><br>
 
 <button onclick="sendScore()">提交</button>
-
+<br>
+<span id="result"></span>
+</div>
 
 <script>
-
 function sendScore(){
-
-fetch("http://localhost:3000/score",{
-
-method:"POST",
-
-headers:{
-"Content-Type":"application/json"
-},
-
-body:JSON.stringify({
-
-name:document.getElementById("name").value,
-
-game:"五子棋",
-
-score:Number(document.getElementById("score").value)
-
-})
-
-})
-
-.then(res=>res.json())
-
-.then(data=>{
-
-alert("提交成功");
-
-});
-
+    fetch("/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: document.getElementById("name").value,
+            game: document.getElementById("gameSel").value,
+            score: Number(document.getElementById("score").value)
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        document.getElementById("result").innerText = data.ok
+            ? "✅ 提交成功，当前最佳：" + data.best + " " + data.unit
+            : "❌ " + data.message;
+    })
+    .catch(() => { document.getElementById("result").innerText = "❌ 提交失败"; });
 }
-
 </script>
 
 </body>

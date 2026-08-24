@@ -1,187 +1,209 @@
-// 引入 Express（创建服务器）和 fs（读写文件）
-const express = require("express");
+// server.js —— 小游戏统一排行榜服务器（纯 Node http，无依赖）
+// 支持你网站上所有小游戏：游戏结束上报分数 → 按游戏维护全球榜单 → /ranking 查看
+// 自带防刷分：限流(同玩家短时间只允许一次) + 分数上限 + 名字清洗
+//
+// 启动：node server.js （默认端口 3000，可用 PORT 改）
+
+const http = require("http");
 const fs = require("fs");
+const path = require("path");
 
+const PORT = process.env.PORT || 3000;
+const ROOT = __dirname;
+const DATA_FILE = path.join(ROOT, "scores.json");
 
-// 创建服务器
-const app = express();
+// ===== 游戏配置：best=min 表示“越小越好”(如猜数字次数)，best=max 表示“越大越好”
+// cap = 分数上限(超过判为异常，防作弊)
+const GAMES = {
+  "2048":    { label: "2048",    best: "max", cap: 10000000, unit: "分" },
+  "snake":   { label: "贪吃蛇",  best: "max", cap: 10000000, unit: "分" },
+  "typing":  { label: "打字",    best: "max", cap: 500,      unit: "字/分" },
+  "guess":   { label: "猜数字",  best: "min", cap: 99,       unit: "次" },
+  "gomoku":  { label: "五子棋",  best: "max", cap: 100000,   unit: "连胜" },
+  "chess":   { label: "象棋",    best: "max", cap: 100000,   unit: "连胜" },
+  "fish":    { label: "捕鱼",    best: "max", cap: 10000000, unit: "分" }
+};
 
-// 记录玩家最后一次加分时间
-let lastWinTime = {};
+// 数据：{ "游戏": { "玩家": { score: 最佳分, ts: 时间戳 } } }
+let scores = loadScores();
 
-// 允许网页访问服务器接口
-app.use((req,res,next)=>{
-
-    res.header("Access-Control-Allow-Origin","*");
-
-    res.header(
-        "Access-Control-Allow-Headers",
-        "Content-Type"
-    );
-
-    next();
-
-});
-
-// 允许服务器接收 JSON 数据
-app.use(express.json());
-
-
-// 读取排行榜数据文件
-let scores = JSON.parse(
-    fs.readFileSync("scores.json")
-);
-
-
-// 测试接口
-// 访问 http://localhost:3000
-// 返回服务器状态
-app.get("/", (req,res)=>{
-
-    res.send("毛毛的排行榜服务器😋");
-
-});
-
-
-// 提供排行榜网页
-// 访问 http://localhost:3000/ranking.html
-app.get("/ranking.html",(req,res)=>{
-
-    res.sendFile(__dirname + "/ranking.html");
-
-});
-
-
-// 获取排行榜数据接口
-// 网页通过这里获取玩家分数
-app.get("/ranking",(req,res)=>{
-
-
-    // 复制一份数据，避免直接修改原数据
-    let ranking = [...scores];
-
-
-    // 按分数从高到低排序
-    ranking.sort((a,b)=>{
-
-        return b.score - a.score;
-
-    });
-
-
-    // 返回 JSON 数据
-    res.json(ranking);
-
-});
-
-
-
-// 玩家胜利加分接口
-// 游戏结束时调用
-// 例如：
-// {
-//   name:"毛毛",
-//   game:"五子棋"
-// }
-app.post("/win",(req,res)=>{
-
-
-    // 获取游戏发送来的玩家信息
-    let data = req.body;
-
-    // 防止短时间重复刷分
-let now = Date.now();
-
-if(lastWinTime[data.name] && now - lastWinTime[data.name] < 3000){
-
-    return res.json({
-
-        success:false,
-
-        message:"操作太快"
-
-    });
-
+function loadScores() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw;
+  } catch (e) {}
+  return {};
 }
 
-
-lastWinTime[data.name] = now;
-
-console.log(data.name,
- lastWinTime[data.name]);
-
-    // 查找玩家是否已经存在
-    let player = scores.find(
-
-        s => s.name === data.name && s.game === data.game
-
-    );
-
-
-    // 如果玩家存在，积分 +1
-    if(player){
-
-    if(data.game === "猜数字"){
-
-        // 猜数字：次数越少越好
-
-        if(data.score < player.score){
-
-            player.score = data.score;
-
-        }
-
-    }else{
-
-        // 其他游戏：胜利次数+1
-
-        player.score++;
-
-    }
-
+function saveScores() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(scores, null, 2));
 }
 
-    // 如果玩家不存在，创建新玩家
-    else{
+// ===== 防刷分：同玩家两次提交间隔（毫秒） =====
+const MIN_INTERVAL = 2000;
+const lastSubmit = {};
 
-        scores.push({
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
+};
 
-            name:data.name,
+function sendJSON(res, status, obj) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Origin": "*"
+  });
+  res.end(JSON.stringify(obj));
+}
 
-            game:data.game,
+function sanitizeName(n) {
+  return String(n == null ? "" : n)
+    .replace(/[<>&"'\\]/g, "")
+    .trim()
+    .slice(0, 24);
+}
 
-            score:data.game === "猜数字" ? data.score : 1
+// ===== 处理一次成绩提交 =====
+function handleSubmit(data) {
+  const name = sanitizeName(data.name);
+  const game = String(data.game || "").trim();
+  const score = Number(data.score);
 
-        });
+  if (!name) return { ok: false, message: "名字不能为空" };
+  if (!GAMES[game]) return { ok: false, message: "未知游戏：" + game };
+  if (isNaN(score) || score < 0) return { ok: false, message: "分数无效" };
+  if (score > GAMES[game].cap) return { ok: false, message: "分数异常" };
 
+  // 限流
+  const now = Date.now();
+  if (lastSubmit[name] && now - lastSubmit[name] < MIN_INTERVAL) {
+    return { ok: false, message: "操作太快，稍后再试" };
+  }
+  lastSubmit[name] = now;
+
+  if (!scores[game]) scores[game] = {};
+  const prev = scores[game][name];
+  let best;
+  if (GAMES[game].best === "min") {
+    best = prev && prev.score < score ? prev.score : score;
+  } else {
+    best = prev && prev.score > score ? prev.score : score;
+  }
+  scores[game][name] = { score: best, ts: now };
+  saveScores();
+
+  return { ok: true, game: game, best: best, unit: GAMES[game].unit };
+}
+
+// ===== 取某个游戏的排行榜 =====
+function leaderboard(game, limit) {
+  const entries = scores[game] || {};
+  const arr = Object.keys(entries).map((name) => ({
+    name: name,
+    score: entries[name].score,
+    ts: entries[name].ts
+  }));
+  const dir = GAMES[game].best === "min" ? 1 : -1; // min:小在前; max:大在前
+  arr.sort((a, b) => (dir * (a.score - b.score)) || (a.ts - b.ts)); // 同分先到者先
+  return arr.slice(0, limit);
+}
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8"
+};
+
+function serveStatic(res, pathname) {
+  const rel = pathname === "/" ? "index.html" : pathname;
+  const filePath = path.join(ROOT, rel);
+  if (!filePath.startsWith(ROOT)) {
+    res.writeHead(403);
+    res.end("forbidden");
+    return;
+  }
+  fs.readFile(filePath, (err, content) => {
+    if (err) {
+      res.writeHead(404);
+      res.end("404 Not Found");
+      return;
     }
+    const ext = path.extname(filePath).toLowerCase();
+    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream" });
+    res.end(content);
+  });
+}
 
+const server = http.createServer((req, res) => {
+  const u = new URL(req.url, "http://localhost");
+  const pathname = u.pathname;
+  const query = u.searchParams;
 
-    // 保存最新排行榜数据
-    fs.writeFileSync(
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, CORS);
+    return;
+  }
 
-        "scores.json",
+  // 首页 / 状态
+  if (pathname === "/") {
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("毛毛的小游戏排行榜服务器😋\n游戏：" + Object.keys(GAMES).join("、"));
+    return;
+  }
 
-        JSON.stringify(scores,null,2)
+  // 列出所有游戏
+  if (pathname === "/games") {
+    const list = Object.keys(GAMES).map((id) => ({
+      id: id,
+      label: GAMES[id].label,
+      best: GAMES[id].best,
+      unit: GAMES[id].unit
+    }));
+    sendJSON(res, 200, { games: list });
+    return;
+  }
 
-    );
+  // 排行榜：/ranking?game=2048&limit=10 ；不指定则返回所有游戏
+  if (pathname === "/ranking") {
+    const game = (query.get("game") || "").trim();
+    const limit = Math.min(Number(query.get("limit")) || 10, 100);
+    if (game) {
+      if (!GAMES[game]) return sendJSON(res, 400, { ok: false, message: "未知游戏：" + game });
+      return sendJSON(res, 200, { game: game, label: GAMES[game].label, unit: GAMES[game].unit, list: leaderboard(game, limit) });
+    }
+    const all = {};
+    Object.keys(GAMES).forEach((g) => { all[g] = leaderboard(g, limit); });
+    return sendJSON(res, 200, { all: all });
+  }
 
-
-    // 返回成功信息
-    res.json({
-
-        success:true
-
+  // 提交成绩：/score 或 /win
+  if ((pathname === "/score" || pathname === "/win") && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch (e) {
+        return sendJSON(res, 400, { ok: false, message: "格式错误" });
+      }
+      const r = handleSubmit(data);
+      sendJSON(res, r.ok ? 200 : 400, r);
     });
+    return;
+  }
 
-
+  // 静态文件（ranking.html、test.html 等）
+  serveStatic(res, pathname);
 });
 
-
-// 启动服务器
-// 端口：3000
-app.listen(process.env.PORT || 3000,()=>{
-
-    console.log("服务器启动成功");
-
+server.listen(PORT, () => {
+  console.log("🎮 小游戏排行榜服务器已启动：http://localhost:" + PORT);
+  console.log("  榜单页: http://localhost:" + PORT + "/ranking.html");
+  console.log("  提交成绩: POST /score  { name, game, score }");
+  console.log("  排行榜: GET /ranking?game=<游戏>&limit=10");
+  console.log("  游戏列表: GET /games");
 });
