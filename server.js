@@ -44,16 +44,32 @@ function saveScores() {
 const MIN_INTERVAL = 2000;
 const lastSubmit = {};
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
-};
+// ===== CORS：仅放行本站域名, 其他来源拒绝跨域读(防恶意站刷接口) =====
+const ALLOWED_ORIGINS = new Set([
+  "https://maomao1ovo1.github.io",
+  "http://localhost",
+  "http://localhost:3000",
+  "http://localhost:3001"
+]);
 
-function sendJSON(res, status, obj) {
+function corsHeaders(req) {
+  const origin = (req && req.headers && req.headers.origin) || "";
+  if (ALLOWED_ORIGINS.has(origin)) {
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Headers": "Content-Type, X-Admin-Token",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Vary": "Origin"
+    };
+  }
+  // 非白名单: 不返回 CORS 头(浏览器会阻止跨域读取)
+  return {};
+}
+
+function sendJSON(res, status, obj, req) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*"
+    ...corsHeaders(req || { headers: {} })
   });
   res.end(JSON.stringify(obj));
 }
@@ -76,12 +92,20 @@ function handleSubmit(data) {
   if (isNaN(score) || score < 0) return { ok: false, message: "分数无效" };
   if (score > GAMES[game].cap) return { ok: false, message: "分数异常" };
 
-  // 限流
+  // 限流: 按 IP+名字 双维度(换名也可限住) + 每IP全局节流
   const now = Date.now();
-  if (lastSubmit[name] && now - lastSubmit[name] < MIN_INTERVAL) {
+  const ip = data._ip || "ip";
+  const key = ip + "|" + name;
+  if (lastSubmit[key] && now - lastSubmit[key] < MIN_INTERVAL) {
     return { ok: false, message: "操作太快，稍后再试" };
   }
-  lastSubmit[name] = now;
+  lastSubmit[key] = now;
+  // 同 IP 全局: 防止换名刷榜(3次/5秒)
+  const ipKey = "ip:" + ip;
+  if (lastSubmit[ipKey] && now - lastSubmit[ipKey] < 1500) {
+    return { ok: false, message: "操作太快，稍后再试" };
+  }
+  lastSubmit[ipKey] = now;
 
   if (!scores[game]) scores[game] = {};
   const prev = scores[game][name];
@@ -144,7 +168,7 @@ const server = http.createServer((req, res) => {
   const query = u.searchParams;
 
   if (req.method === "OPTIONS") {
-    res.writeHead(204, CORS);
+    res.writeHead(204, corsHeaders(req));
     return;
   }
 
@@ -163,7 +187,7 @@ const server = http.createServer((req, res) => {
       best: GAMES[id].best,
       unit: GAMES[id].unit
     }));
-    sendJSON(res, 200, { games: list });
+    sendJSON(res, 200, { games: list }, req);
     return;
   }
 
@@ -172,12 +196,12 @@ const server = http.createServer((req, res) => {
     const game = (query.get("game") || "").trim();
     const limit = Math.min(Number(query.get("limit")) || 10, 100);
     if (game) {
-      if (!GAMES[game]) return sendJSON(res, 400, { ok: false, message: "未知游戏：" + game });
-      return sendJSON(res, 200, { game: game, label: GAMES[game].label, unit: GAMES[game].unit, list: leaderboard(game, limit) });
+      if (!GAMES[game]) return sendJSON(res, 400, { ok: false, message: "未知游戏：" + game }, req);
+      return sendJSON(res, 200, { game: game, label: GAMES[game].label, unit: GAMES[game].unit, list: leaderboard(game, limit) }, req);
     }
     const all = {};
     Object.keys(GAMES).forEach((g) => { all[g] = leaderboard(g, limit); });
-    return sendJSON(res, 200, { all: all });
+    return sendJSON(res, 200, { all: all }, req);
   }
 
   // 提交成绩：/score 或 /win
@@ -189,15 +213,18 @@ const server = http.createServer((req, res) => {
       try {
         data = JSON.parse(body);
       } catch (e) {
-        return sendJSON(res, 400, { ok: false, message: "格式错误" });
+        return sendJSON(res, 400, { ok: false, message: "格式错误" }, req);
       }
+      // 提取客户端 IP(Render 转发走 x-forwarded-for) 用于双维度限流
+      const forwarded = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+      data._ip = forwarded || req.socket.remoteAddress || "ip";
       const r = handleSubmit(data);
-      sendJSON(res, r.ok ? 200 : 400, r);
+      sendJSON(res, r.ok ? 200 : 400, r, req);
     });
     return;
   }
 
-  // 删除某玩家某游戏的成绩：POST /score/delete  { name, game }
+  // 删除某玩家某游戏的成绩：POST /score/delete  { name, game }  (需管理令牌)
   if (pathname === "/score/delete" && req.method === "POST") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -206,17 +233,23 @@ const server = http.createServer((req, res) => {
       try {
         data = JSON.parse(body);
       } catch (e) {
-        return sendJSON(res, 400, { ok: false, message: "格式错误" });
+        return sendJSON(res, 400, { ok: false, message: "格式错误" }, req);
+      }
+      // 管理令牌校验: 环境变量 ADMIN_TOKEN; 未设置或不对 → 拒绝
+      const adminToken = process.env.ADMIN_TOKEN;
+      const provided = req.headers["x-admin-token"] || data.token || "";
+      if (!adminToken || provided !== adminToken) {
+        return sendJSON(res, 403, { ok: false, message: "无删除权限" }, req);
       }
       const name = sanitizeName(data.name);
       const game = String(data.game || "").trim();
-      if (!name || !GAMES[game]) return sendJSON(res, 400, { ok: false, message: "参数无效" });
+      if (!name || !GAMES[game]) return sendJSON(res, 400, { ok: false, message: "参数无效" }, req);
       if (scores[game] && scores[game][name]) {
         delete scores[game][name];
         saveScores();
-        return sendJSON(res, 200, { ok: true, message: "已删除：" + name + "（" + game + "）" });
+        return sendJSON(res, 200, { ok: true, message: "已删除：" + name + "（" + game + "）" }, req);
       }
-      return sendJSON(res, 200, { ok: false, message: "未找到该成绩" });
+      return sendJSON(res, 200, { ok: false, message: "未找到该成绩" }, req);
     });
     return;
   }
