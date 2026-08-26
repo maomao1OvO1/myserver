@@ -169,6 +169,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, corsHeaders(req));
+    res.end();
     return;
   }
 
