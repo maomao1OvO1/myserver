@@ -142,11 +142,48 @@ const MIME = {
   ".txt": "text/plain; charset=utf-8"
 };
 
+/* 请求体读取工具：带 8 KB 上限 + 「必须是 JSON 对象」校验。
+ * 为什么必须有：原来代码是「JSON.parse 之后直接 data._ip = …」——
+ * 客户端发一个 body 为 `null` 的请求，JSON.parse 返回 null，这一行就抛 TypeError；
+ * 而回调里没有 try/catch、进程也没有全局兜底 ⇒ 一条请求就能把排行榜服务打挂
+ * （2026-09-15 审计本地实证：TypeError: Cannot set properties of null (setting '_ip')，进程退出）。 */
+const MAX_BODY = 8 * 1024;
+function readJSONBody(req, cb) {
+  let body = "";
+  let tooBig = false;
+  req.on("data", (c) => {
+    if (tooBig) return;
+    body += c;
+    if (body.length > MAX_BODY) { tooBig = true; body = ""; }
+  });
+  req.on("end", () => {
+    if (tooBig) return cb(new Error("body too large"));
+    let data;
+    try { data = JSON.parse(body || ""); } catch (e) { return cb(new Error("bad json")); }
+    if (!data || typeof data !== "object" || Array.isArray(data)) return cb(new Error("bad shape"));
+    cb(null, data);
+  });
+  req.on("error", () => cb(new Error("stream error")));
+}
+
+/* 静态文件白名单：只放行「页面与前端资源」。
+ * 为什么：早期实现把 __dirname 当网站根目录对外发，导致 /server.js、/package.json、
+ * /package-lock.json、/node_modules/**、/.git/HEAD 这些都能被公网直接下载（2026-09-15 审计线上实证 200）。
+ * 规则三条：① 路径里任何一段以 . 开头（隐藏文件/.git）→ 拒；② 命中黑名单文件名 → 拒；
+ *          ③ 扩展名不在 MIME 白名单里 → 拒。要新增可公开的文件类型，往 MIME 表加一项即可。 */
+const BLOCKED_FILES = new Set(["server.js", "package.json", "package-lock.json", "scores.json", "README.md", "LICENSE"]);
 function serveStatic(res, pathname) {
-  const rel = pathname === "/" ? "index.html" : pathname;
+  let rel = pathname === "/" ? "index.html" : pathname;
+  try { rel = decodeURIComponent(rel); } catch (e) { /* 非法编码 → 交给下面的路径检查拒绝 */ }
+  const parts = rel.split("/").filter(Boolean);
+  const ext = path.extname(rel).toLowerCase();
+  const bad = parts.some((p) => p.startsWith(".")) ||
+              parts.some((p) => BLOCKED_FILES.has(p)) ||
+              parts.includes("node_modules") ||
+              !MIME[ext];
   const filePath = path.join(ROOT, rel);
-  if (!filePath.startsWith(ROOT)) {
-    res.writeHead(403);
+  if (bad || !filePath.startsWith(ROOT)) {
+    res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("forbidden");
     return;
   }
@@ -156,7 +193,6 @@ function serveStatic(res, pathname) {
       res.end("404 Not Found");
       return;
     }
-    const ext = path.extname(filePath).toLowerCase();
     res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream" });
     res.end(content);
   });
@@ -207,35 +243,20 @@ const server = http.createServer((req, res) => {
 
   // 提交成绩：/score 或 /win
   if ((pathname === "/score" || pathname === "/win") && req.method === "POST") {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => {
-      let data;
-      try {
-        data = JSON.parse(body);
-      } catch (e) {
-        return sendJSON(res, 400, { ok: false, message: "格式错误" }, req);
-      }
+    return readJSONBody(req, (err, data) => {
+      if (err) return sendJSON(res, 400, { ok: false, message: "格式错误" }, req);
       // 提取客户端 IP(Render 转发走 x-forwarded-for) 用于双维度限流
       const forwarded = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
       data._ip = forwarded || req.socket.remoteAddress || "ip";
       const r = handleSubmit(data);
       sendJSON(res, r.ok ? 200 : 400, r, req);
     });
-    return;
   }
 
   // 删除某玩家某游戏的成绩：POST /score/delete  { name, game }  (需管理令牌)
   if (pathname === "/score/delete" && req.method === "POST") {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => {
-      let data;
-      try {
-        data = JSON.parse(body);
-      } catch (e) {
-        return sendJSON(res, 400, { ok: false, message: "格式错误" }, req);
-      }
+    return readJSONBody(req, (err, data) => {
+      if (err) return sendJSON(res, 400, { ok: false, message: "格式错误" }, req);
       // 管理令牌校验: 环境变量 ADMIN_TOKEN; 未设置或不对 → 拒绝
       const adminToken = process.env.ADMIN_TOKEN;
       const provided = req.headers["x-admin-token"] || data.token || "";
@@ -252,12 +273,16 @@ const server = http.createServer((req, res) => {
       }
       return sendJSON(res, 200, { ok: false, message: "未找到该成绩" }, req);
     });
-    return;
   }
 
   // 静态文件（ranking.html、test.html 等）
   serveStatic(res, pathname);
 });
+
+/* 进程级兜底：单条坏请求不该让整个排行榜下线（2026-09-15 审计后加）。
+ * 只记录、不退出 —— 若某类请求持续异常，日志里能立刻看到原因。 */
+process.on("uncaughtException", (e) => console.error("[uncaughtException]", (e && e.message) || e));
+process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", (e && e.message) || e));
 
 server.listen(PORT, () => {
   console.log("🎮 小游戏排行榜服务器已启动：http://localhost:" + PORT);
