@@ -21,7 +21,10 @@ PORT=8080 node server.js   # 换端口
 | `server.js` | 服务器本体（路由 + 榜单读写 + 防刷分） |
 | `ranking.html` | 榜单展示页 |
 | `test.html` | 上报测试页 |
+| `package.json` · `package-lock.json` | 依赖与启动脚本（`npm start`） |
+| `nodemon.json` | 本地开发用：nodemon 热重载配置 |
 | `scores.json` | 榜单数据（本地文件存储；已在 `.gitignore` 里，不进仓库） |
+| `server.js.bak-*` · `server.js.render-version.bak` | 历史备份（同样被 `.gitignore` 忽略，只留在本机） |
 
 ## 说明
 - 数据用**文件存储**（`scores.json`），适合小流量；人数多了建议换成数据库
